@@ -17,16 +17,31 @@
 // <http://www.gnu.org/licenses/>.
 
 #include "rust-compile.h"
-#include "rust-diagnostics.h"
+#include "rust-compile-item.h"
 
 namespace Rust {
 namespace Compile {
+
+CompileCrate::CompileCrate (HIR::Crate &crate, Context *ctx)
+  : crate (crate), ctx (ctx)
+{}
 
 CompileCrate::~CompileCrate () {}
 
 void
 CompileCrate::Compile (HIR::Crate &crate, Context *ctx)
-{}
+
+{
+  CompileCrate c (crate, ctx);
+  c.go ();
+}
+
+void
+CompileCrate::go ()
+{
+  for (auto it = crate.items.begin (); it != crate.items.end (); it++)
+    CompileItem::compile (it->get (), ctx);
+}
 
 } // namespace Compile
 } // namespace Rust

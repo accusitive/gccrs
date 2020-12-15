@@ -1,0 +1,231 @@
+// Copyright (C) 2020 Free Software Foundation, Inc.
+
+// This file is part of GCC.
+
+// GCC is free software; you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation; either version 3, or (at your option) any later
+// version.
+
+// GCC is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or
+// FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+// for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with GCC; see the file COPYING3.  If not see
+// <http://www.gnu.org/licenses/>.
+
+#ifndef RUST_COMPILE_EXPR
+#define RUST_COMPILE_EXPR
+
+#include "rust-compile-base.h"
+#include "rust-compile-tyty.h"
+
+namespace Rust {
+namespace Compile {
+
+class CompileExpr : public HIRCompileBase
+{
+public:
+  static Bexpression *Compile (HIR::Expr *expr, Context *ctx)
+  {
+    CompileExpr compiler (ctx);
+    expr->accept_vis (compiler);
+    return compiler.translated;
+  }
+
+  virtual ~CompileExpr () {}
+
+  void visit (HIR::ReturnExpr &expr) {}
+
+  void visit (HIR::CallExpr &expr) {}
+
+  void visit (HIR::IdentifierExpr &expr)
+  {
+    // need to look up the reference for this identifier
+    NodeId ref_node_id;
+    if (!ctx->get_resolver ()->lookup_resolved_name (
+	  expr.get_mappings ().get_nodeid (), &ref_node_id))
+      {
+	rust_fatal_error (expr.get_locus (), "failed to look up resolved name");
+	return;
+      }
+
+    printf ("have ast node id %u ref %u for expr [%s]\n",
+	    expr.get_mappings ().get_nodeid (), ref_node_id,
+	    expr.as_string ().c_str ());
+
+    // these ref_node_ids will resolve to a pattern declaration but we are
+    // interested in the definition that this refers to get the parent id
+    Resolver::Definition def;
+    if (!ctx->get_resolver ()->lookup_definition (ref_node_id, &def))
+      {
+	rust_error_at (expr.get_locus (), "unknown reference");
+	return;
+      }
+
+    HirId ref;
+    if (!ctx->get_mappings ()->lookup_node_to_hir (
+	  expr.get_mappings ().get_crate_num (), ref_node_id, &ref))
+      {
+	rust_fatal_error (expr.get_locus (), "reverse lookup failure");
+	return;
+      }
+
+    Bvariable *var = nullptr;
+    if (!ctx->lookup_var_decl (ref, &var))
+      {
+	rust_fatal_error (expr.get_locus (),
+			  "failed to lookup compiled variable");
+	return;
+      }
+
+    translated = ctx->get_backend ()->var_expression (var, expr.get_locus ());
+  }
+
+  void visit (HIR::LiteralExpr &expr)
+  {
+    switch (expr.get_lit_type ())
+      {
+	case HIR::Literal::BOOL: {
+	  bool bval = expr.as_string ().compare ("true") == 0;
+	  translated = ctx->get_backend ()->boolean_constant_expression (bval);
+	}
+	return;
+
+	case HIR::Literal::INT: {
+	  mpz_t ival;
+	  if (mpz_init_set_str (ival, expr.as_string ().c_str (), 10) != 0)
+	    {
+	      rust_fatal_error (expr.get_locus (), "bad number in literal");
+	      return;
+	    }
+
+	  TyTy::TyBase *tyty = nullptr;
+	  if (!ctx->get_tyctx ()->lookup_type (
+		expr.get_mappings ().get_hirid (), &tyty))
+	    {
+	      rust_fatal_error (expr.get_locus (),
+				"did not resolve type for this literal expr");
+	      return;
+	    }
+
+	  Btype *type = TyTyResolveCompile::compile (ctx, tyty);
+	  translated
+	    = ctx->get_backend ()->integer_constant_expression (type, ival);
+	}
+	return;
+
+      default:
+	rust_fatal_error (expr.get_locus (), "unknown literal");
+	return;
+      }
+
+    gcc_unreachable ();
+  }
+
+  void visit (HIR::AssignmentExpr &expr)
+  {
+    fncontext fn = ctx->peek_fn ();
+    auto lhs = CompileExpr::Compile (expr.get_lhs (), ctx);
+    auto rhs = CompileExpr::Compile (expr.get_rhs (), ctx);
+
+    Bstatement *assignment
+      = ctx->get_backend ()->assignment_statement (fn.fndecl, lhs, rhs,
+						   expr.get_locus ());
+    ctx->add_statement (assignment);
+  }
+
+  void visit (HIR::ArithmeticOrLogicalExpr &expr)
+  {
+    Operator op;
+    switch (expr.get_expr_type ())
+      {
+      case HIR::ArithmeticOrLogicalExpr::ADD:
+	op = OPERATOR_PLUS;
+	break;
+      case HIR::ArithmeticOrLogicalExpr::SUBTRACT:
+	op = OPERATOR_MINUS;
+	break;
+      case HIR::ArithmeticOrLogicalExpr::MULTIPLY:
+	op = OPERATOR_MULT;
+	break;
+      case HIR::ArithmeticOrLogicalExpr::DIVIDE:
+	op = OPERATOR_DIV;
+	break;
+      case HIR::ArithmeticOrLogicalExpr::MODULUS:
+	op = OPERATOR_MOD;
+	break;
+      case HIR::ArithmeticOrLogicalExpr::BITWISE_AND:
+	op = OPERATOR_AND;
+	break;
+      case HIR::ArithmeticOrLogicalExpr::BITWISE_OR:
+	op = OPERATOR_OR;
+	break;
+      case HIR::ArithmeticOrLogicalExpr::BITWISE_XOR:
+	op = OPERATOR_XOR;
+	break;
+      case HIR::ArithmeticOrLogicalExpr::LEFT_SHIFT:
+	op = OPERATOR_LSHIFT;
+	break;
+      case HIR::ArithmeticOrLogicalExpr::RIGHT_SHIFT:
+	op = OPERATOR_RSHIFT;
+	break;
+      default:
+	rust_fatal_error (expr.get_locus (), "failed to compile operator");
+	return;
+      }
+
+    auto lhs = CompileExpr::Compile (expr.get_lhs (), ctx);
+    auto rhs = CompileExpr::Compile (expr.get_rhs (), ctx);
+
+    translated = ctx->get_backend ()->binary_expression (op, lhs, rhs,
+							 expr.get_locus ());
+  }
+
+  void visit (HIR::ComparisonExpr &expr)
+  {
+    Operator op;
+    switch (expr.get_expr_type ())
+      {
+      case HIR::ComparisonExpr::EQUAL:
+	op = OPERATOR_EQEQ;
+	break;
+      case HIR::ComparisonExpr::NOT_EQUAL:
+	op = OPERATOR_NOTEQ;
+	break;
+      case HIR::ComparisonExpr::GREATER_THAN:
+	op = OPERATOR_GT;
+	break;
+      case HIR::ComparisonExpr::LESS_THAN:
+	op = OPERATOR_LT;
+	break;
+      case HIR::ComparisonExpr::GREATER_OR_EQUAL:
+	op = OPERATOR_GE;
+	break;
+      case HIR::ComparisonExpr::LESS_OR_EQUAL:
+	op = OPERATOR_LE;
+	break;
+      default:
+	rust_fatal_error (expr.get_locus (), "failed to compile operator");
+	return;
+      }
+
+    auto lhs = CompileExpr::Compile (expr.get_lhs (), ctx);
+    auto rhs = CompileExpr::Compile (expr.get_rhs (), ctx);
+
+    translated = ctx->get_backend ()->binary_expression (op, lhs, rhs,
+							 expr.get_locus ());
+  }
+
+private:
+  CompileExpr (Context *ctx) : HIRCompileBase (ctx), translated (nullptr) {}
+
+  Bexpression *translated;
+};
+
+} // namespace Compile
+} // namespace Rust
+
+#endif // RUST_COMPILE_EXPR

@@ -536,6 +536,7 @@ public:
   void accept_vis (HIRVisitor &vis) override;
 
   Expr *get_lhs () { return main_or_left_expr.get (); }
+  Expr *get_rhs () { return right_expr.get (); }
 
   /* TODO: implement via a function call to std::cmp::PartialEq::eq(&op1, &op2)
    * maybe? */
@@ -2560,6 +2561,14 @@ public:
 	if (!cb (it->get ()))
 	  return;
       }
+  }
+
+  Location get_closing_locus ()
+  {
+    if (statements.size () == 0)
+      return get_locus ();
+
+    return statements[statements.size () - 1]->get_locus_slow ();
   }
 
 protected:
